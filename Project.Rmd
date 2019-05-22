@@ -1,0 +1,456 @@
+---
+title: 'Which country has the best Olympians?'
+author: "Spencer Michalski & Sam Baer"
+date: "5/22/2019"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction 
+We used a [Kaggle dataset][kaggle] to analyze 120 years of Olympics data (Athletes and Events) to find out which countries have historically performed best. 
+This document shows our process: Data Tidying, Exploratory Data Analysis, Regression Analysis, and Conclusions. 
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+```
+
+# Tidying the data
+Most datasets need to be "cleaned" or "tidied" before they can be analyzed properly. "Tidying" the data refers to the preparation of data for analysis. Tidying includes handling header lines, duplicate data entries, mis-aligned data entries, and missing data. 
+Most ideas about Tidying come from this paper: [Hadley Wickham Paper][tidy_paper]
+
+## Ingesting the data
+We ingested the CSV data for Athlete-events. The column names are as follows: 
+
+ID - Unique number for each athlete
+
+Name - Athlete's name
+
+Sex - M or F
+
+Age - Integer
+
+Height - In centimeters
+
+Weight - In kilograms
+
+Team - Team name
+
+NOC - National Olympic Committee 3-letter code
+
+Games - Year and season
+
+Year - Integer
+
+Season - Summer or Winter
+
+City - Host city
+
+Sport - Sport
+
+Event - Event
+
+Medal - Gold, Silver, Bronze, or NA
+
+The primary key, which just means a unique identifier for each entity, would be (ID, Games, Event). You can see the resulting dataframe here:
+```{r ingest_athlete_events}
+athlete_events_url <- "./athlete_events.csv"
+athlete_events <- read_csv(athlete_events_url) 
+athlete_events
+```
+There is another CSV file included on Kaggle called noc_regions.csv. This file identifies the name of the region corresponding to each NOC, as well as some notes about the region. 
+
+NOC - National Olympic Committee 3 letter code
+
+region - Country name
+
+notes - Notes
+
+Here's the resulting dataframe:
+```{r ingest_noc}
+noc_regions_url <- "./noc_regions.csv"
+noc_regions <- read_csv(noc_regions_url)
+noc_regions
+```
+
+Luckily, our datasets are already mostly clean. The biggest problem is to handle duplicate entries and missing data values. 
+
+## Removing duplicate entries
+We noticed that there are identical entries in the athlete_events dataframe. This should not be the case, as Olympic athletes cannot participate in the same event multiple times in a single Games. We used the distinct() function from the dplyr package to neatly remove those entries. 
+```{r remove_duplicates}
+athlete_events <- athlete_events %>%
+  dplyr::distinct() # remove duplicate entries
+```
+
+## Handling missing values
+We noticed that there are NA values in the athlete_events dataframe, specifically in the columns for Height, Weight, and Medal. We decided to replace the NA Medal values with "No Medal" to make categorical analysis easier if we decide to do it in the future. 
+```{r handle_NA_medals}
+athlete_events <- athlete_events %>%
+  mutate(Medal=ifelse(is.na(Medal), "No Medal", Medal))
+```
+
+## Imputation of missing values
+We also need to impute values for Weight and Height. Imputation removes missing data values by substituting an estimate of that value. 
+
+### Imputation of Weight
+A lot of the entries in the athlete_events dataset are missing Weight values. We had 3 options of dealing with this: 1) delete the entries with missing values (totaling 55,814 rows); 2) impute the missing values based on some estimate; 3) ignore them in subsequent analyses that require Weight. Option 1 would get rid of a lot of precious data, which would not be nice. Option 2 would be beneficial, if we choose an appropriate estimate. Option 3 would rule out a lot of the data in subsequent analyses, which could cause misrepresentation. 
+
+We decided on option 2, to impute the values. In order to figure out a good estimate for Weight, we generated side-by-side boxplots to check the distribution of Weight across Year. We made one of these visuals for each Sex, because we assumed that men tend to be a little heavier than women. 
+```{r Weight_analysis}
+athlete_events %>%
+  filter(Sex=="M") %>%
+  ggplot(aes(x=Year, y=Weight, group=Year)) +
+  geom_boxplot()
+
+athlete_events %>%
+  filter(Sex=="F") %>%
+  ggplot(aes(x=Year, y=Weight, group=Year)) +
+  geom_boxplot()
+```
+The results show a relatively constant central trend for Weight across Year, with higher outliers appearing as time goes on. Across the years, Weight of Male athletes seems to be consistently higher than Weight of Female athletes. 
+
+Here, we imputed the values. 
+```{r Weight_imputation}
+# For each Year and Sex, compute median Weight of the athletes
+Weight_medians <- athlete_events %>%
+  filter(!is.na(Weight)) %>%
+  group_by(Year, Sex) %>%
+  summarize(Weight_median=median(Weight))
+
+athlete_events <- athlete_events %>%
+  inner_join(Weight_medians, by=c("Year","Sex")) %>%
+  mutate(Weight=ifelse(is.na(Weight), Weight_median, Weight))
+```
+
+### Imputation of Height
+We have also decided to impute Height with the mean of the Height for that Year conditioned on Sex.
+```{r imputate_height, echo = TRUE}
+# For each Year and Sex, compute mean Height of the athletes
+Height_means <- athlete_events %>%
+  filter(!is.na(Height)) %>%
+  group_by(Year, Sex) %>%
+  summarise(Height_mean = mean(Height))
+
+athlete_events <- athlete_events %>%
+  inner_join(Height_means, by=c("Year","Sex")) %>%
+  mutate(Height=ifelse(is.na(Height), Height_mean, Height))
+```
+
+### New Distributions of Weight and Height
+Let's see what the distributions look like now that we've imputed values for Height and Weight. We see that both distributions are approximately normal, with a lot of values around the center (these are the imputed values). The reason that there are so many more in the center is because of the imputation: we imputed the Height of 58814 athlete events, and we imputed the Weight of 61527 athlete events. 
+```{r height_weight_imputed}
+# Plot histogram for distribution of Weight
+athlete_events %>%
+  ggplot(aes(x=Weight)) +
+  geom_histogram() +
+  ggtitle("Distribution of Weight with imputed values")
+
+# Plot histogram for distribution of Height
+athlete_events %>%
+  ggplot(aes(x=Height)) +
+  geom_histogram() +
+  ggtitle("Distribution of Height with imputed values")
+```
+
+Now that imputation is complete, we have finished cleaning the dataset and can begin some real analysis. 
+
+# Exploratory Data Analysis
+Exploratory Data Analysis (EDA) is the process of exploring raw data to detect possible trends in the data. 
+
+## Individual variable distributions
+Below, we displayed the distributions of Sex, Age, Height, Weight, Season, and Medal.
+We expect there to be a relatively normal distribution of Age, Height, Weight.
+```{r distributions}
+# Distribution of Sex
+athlete_events %>%
+  ggplot(aes(x=Sex)) +
+  geom_bar() +
+  ggtitle("Distribution of Sex")
+
+# Distribution of Age
+athlete_events %>%
+  ggplot(aes(x=Age)) +
+  geom_histogram() +
+  ggtitle("Distribution of Age")
+
+# Distribution of Height
+athlete_events %>%
+  ggplot(aes(x=Height)) +
+  geom_histogram() +
+  ggtitle("Distribution of Height")
+
+# Distribution of Weight
+athlete_events %>%
+  ggplot(aes(x=Weight)) +
+  geom_histogram() +
+  ggtitle("Distribution of Weight")
+
+# Distribution of Season
+athlete_events %>%
+  ggplot(aes(x=Season)) +
+  geom_bar() +
+  ggtitle("Distribution of Season")
+
+# Distribution of Medal
+athlete_events %>%
+  ggplot(aes(x=Medal)) +
+  geom_bar() +
+  ggtitle("Distribution of Medal")
+```
+
+## Efficiency Ratio for each NOC
+To see which NOC regions were the most efficient overall, we calculated ratios of (total medals ever won) / (total athletes ever sent). 
+In the dataframe below, you can see the most efficient regions over time. It's interesting to note that URS has the highest total medals-to-athletes ratio, but the country no longer exists after the fall of the Soviet Union in 1991 (https://en.wikipedia.org/wiki/Soviet_Union_at_the_Olympics). 
+```{r count_unique_athletes_by_NOC}
+# Total medals ever won in Olympics by each NOC
+medals <- athlete_events %>% 
+  filter(Medal != "No Medal") %>%
+  group_by(NOC) %>%
+  summarize(total_medals = n()) %>%
+  magrittr::set_colnames(c("NOC", "total_medals"))
+
+# Total athletes ever sent to Olympics by each NOC
+athletes <- athlete_events %>%
+  group_by(ID) %>%
+  group_by(NOC) %>%
+  summarize(total_athletes = n()) %>%
+  magrittr::set_colnames(c("NOC", "total_athletes"))
+
+ratios <- medals %>%
+  right_join(athletes, by="NOC") %>%
+  mutate(total_medals = ifelse(is.na(total_medals), 0, total_medals)) %>%
+  mutate(ratio = total_medals / total_athletes)
+
+# Sort by total medal-to-athlete ratio 
+(ratios$NOC[order(ratios$ratio, decreasing=TRUE)]) %>%
+  cbind(
+    ratios$total_medals[order(ratios$ratio, decreasing=TRUE)],
+    ratios$total_athletes[order(ratios$ratio, decreasing=TRUE)],
+    ratios$ratio[order(ratios$ratio, decreasing=TRUE)]
+    ) %>%
+  as_data_frame() %>%
+  magrittr::set_colnames(c("NOC", "total_medals", "total_athletes", "Ratio")) %>%
+  inner_join(noc_regions, by="NOC") %>%
+  select(-notes)
+```
+
+## Efficiency Ratio for each NOC by Year
+To see which NOC regions were the most efficient by year, we calculated ratios of (total medals won that year) / (total athletes sent that year). 
+In the dataframe below, you can see the most efficient regions over time. It's interesting to note that URS has the highest total medals-to-athletes ratio, but the country no longer exists after the fall of the Soviet Union in 1991 (https://en.wikipedia.org/wiki/Soviet_Union_at_the_Olympics). 
+```{r count_unique_athletes_by_NOC_and_year}
+# Total medals ever won in Olympics by each NOC
+yearly_medals <- athlete_events %>% 
+  filter(Medal != "No Medal") %>%
+  group_by(NOC, Year) %>%
+  summarize(total_medals = n()) %>%
+  magrittr::set_colnames(c("NOC", "Year", "total_medals"))
+
+# Total athletes ever sent to Olympics by each NOC
+yearly_athletes <- athlete_events %>%
+  group_by(ID, Year) %>%
+  group_by(NOC, Year) %>%
+  summarize(total_athletes = n()) %>%
+  magrittr::set_colnames(c("NOC", "Year", "total_athletes"))
+
+yearly_ratios <- yearly_medals %>%
+  right_join(yearly_athletes, by=c("NOC", "Year")) %>%
+  mutate(total_medals = ifelse(is.na(total_medals), 0, total_medals)) %>%
+  mutate(ratio = total_medals / total_athletes)
+yearly_ratios
+
+# Sort by total medal-to-athlete ratio 
+yearly_ratios <- (yearly_ratios$NOC[order(yearly_ratios$ratio, decreasing=TRUE)]) %>%
+  cbind(
+    yearly_ratios$total_medals[order(yearly_ratios$ratio, decreasing=TRUE)],
+    yearly_ratios$total_athletes[order(yearly_ratios$ratio, decreasing=TRUE)],
+    yearly_ratios$Year[order(yearly_ratios$ratio, decreasing=TRUE)],
+    yearly_ratios$ratio[order(yearly_ratios$ratio, decreasing=TRUE)]
+  ) %>%
+  as_data_frame() %>%
+  magrittr::set_colnames(c("NOC", "total_medals", "total_athletes", "Year", "Ratio")) %>%
+  inner_join(noc_regions, by="NOC") %>%
+  select(-notes) %>%
+  readr::type_convert(col_types = cols(Year=col_double(), Ratio=col_double()))
+
+yearly_ratios
+```
+
+## Plotting Total Events over Total Athletes
+```{r plot_ratio_trends_across_year}
+yearly_ratios %>%
+  filter(NOC=="USA") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("USA Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="GER") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("Germany Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="NED") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("Netherlands Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="PAK") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("Pakistan Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="CHN") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("China Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="SWE") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("Sweden Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="JPN") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("Japan Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="RSA") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("South Africa Ratios")
+
+yearly_ratios %>%
+  filter(NOC=="JAM") %>%
+  ggplot(aes(x=Year, y=Ratio)) +
+  geom_point() +
+  geom_smooth(method=lm) +
+  ggtitle("Jamaica Ratios")
+```
+
+# Regression Analysis
+Upon analyzing the ratio vs. year plots, we can observe a moderately strong negative linear trend in USA's efficiency ratios across the years. The ANOVA Test for Goodness of Fit of the model Year=Ratio results in a p-value of 0.01206, which is less than alpha=.05. 
+Therefore, we reject the null hypothesis and conclude that there is a statistically significant linear relationship between American medal-to-athlete ratios and Year. 
+
+At 95% confidence level, we also find significant linear relationships for medal-to-athlete ratios and Year for the following regions: USA, China (CHN), and South Africa (RSA). 
+```{r anova_USA_ratios}
+yearly_ratios %>%
+  filter(NOC=="USA") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="GER") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="NED") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="PAK") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="CHN") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="SWE") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="JPN") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="RSA") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+
+yearly_ratios %>%
+  filter(NOC=="JAM") %>%
+  lm(formula = Year~Ratio) %>%
+  anova()
+```
+
+##Plotting total athletes by total medals
+```{r totals_plot}
+ratios %>% 
+  filter(total_medals != 0) %>%
+  ggplot(aes(x = log(sqrt(total_athletes)), y = log(sqrt(total_medals)))) +
+  geom_smooth(method = lm) +
+  geom_point()
+
+```
+
+From the transformed plot above I belive that a linerar model will be appropriate to represent the data.
+
+##Linear Model of total medals to athletes
+
+```{r linear_model_total} 
+ratios %>%
+  lm(formula = total_medals ~ total_athletes) %>%
+  anova()
+```
+
+The results of the linear model show that there is a definite correlation between a the total number of athletes sent by a country and thier total medals. This implies that the more a country competes in the olympics, the more medals they are likely to win. Meaning that the countries that have invested either more time, more resources (people/money), or both have achieved greater success then those that don't. This is not a ground breaking discover, but confirms what we have already thought to be true. This model ould be useful to estimate the number of medals a NOC will win in the 2020 olypics given the sizes of the teams, but sadly the teams have not been finalized at this point.
+
+##BMI analysis
+
+Now we will look at the BMI of ahtletes in relation to medals won. We expect a sizable amount of error here because of the way we imputated the data earlier.
+
+```{r BMI_caculation}
+BMI_chart <- athlete_events %>%
+  mutate(BMI = Weight / (Height/ 100)^2) #BMI is weight (in kg) / height^2 (in meters)
+
+BMI_chart %>%
+  ggplot(aes(x = Year, y = BMI, group = Year)) +
+  geom_boxplot()
+
+BMI_chart %>%
+  group_by(Year, Sex) %>%
+  summarise(avg_BMI = mean(BMI)) %>%
+  ggplot(aes(x = Year, y = avg_BMI, color = Sex)) + 
+  geom_point()
+```
+
+The BMI's of the athletes all seem to center around 23 or so, with many outliers above that. I expect these outliers to be for events that require the athlete to be very strong or bulky, like powerlifting.
+
+##Seeing if there is a connection between BMI and Medal winning
+
+```{r medals_vs_BMI}
+BMI_chart %>%
+  filter(Medal != "No Medal") %>%
+  group_by(ID) %>%
+  summarise(num = n(), avg_BMI = mean(BMI)) %>%
+  ggplot(aes(x = avg_BMI, y = num)) +
+  geom_point() + 
+  geom_smooth(method = lm)
+```
+
+I suspect there is a relationship here, but I also suspect these values are heavily conditioned on event since not every body type suits every event the same. And, since most athletes only ever win 1 medal, the regression is very heavily weighted by that. In further investigation we would limit our sample to those who have 5 or more medals, as they are exceptional indivisuals, and condition the results based on the event.
+
+
+[kaggle]: https://www.kaggle.com/heesoo37/120-years-of-olympic-history-athletes-and-results "Kaggle dataset"
+[tidy_paper]: http://www.jstatsoft.org/v59/i10/paper "Hadley Wickham Paper"
