@@ -451,6 +451,10 @@ BMI_chart %>%
 
 I suspect there is a relationship here, but I also suspect these values are heavily conditioned on event since not every body type suits every event the same. And, since most athletes only ever win 1 medal, the regression is very heavily weighted by that. In further investigation we would limit our sample to those who have 5 or more medals, as they are exceptional indivisuals, and condition the results based on the event.
 
+# Conclusions
+Through our analysis we have determined that there is in fact a relationship between the number of athletes representing a country and their total medal winnings. We have also determined that there is evidence to suggest the US’s and South Africa’s efficiency in medal earning is going down over time, and there is also evidence to suggest that China’s efficiency in medal earning is going up over time. Sadly, we did not have the time to do this type of efficiency analysis for every country currently in the Olympics, but that would be the next step.
+
+
 
 [kaggle]: https://www.kaggle.com/heesoo37/120-years-of-olympic-history-athletes-and-results "Kaggle dataset"
 [tidy_paper]: http://www.jstatsoft.org/v59/i10/paper "Hadley Wickham Paper"
